@@ -63,6 +63,7 @@ Tags written:
 
 - **Python 3.8+**
 - **Linux** (Debian/Ubuntu recommended, also works on macOS)
+- **FFmpeg** (required for `.opus` analysis fallback conversion)
 - **~100MB disk space** for models
 - **8GB+ RAM** recommended
 
@@ -481,6 +482,13 @@ Could not load dynamic library 'libcudart.so.11.0'
 - Close other applications
 - Upgrade RAM if processing very large files
 
+### `.opus` files fail with "Unsupported codec"
+
+- This project converts `.opus` files to a temporary mono 16kHz WAV with `ffmpeg` before Essentia analysis, then deletes the temporary WAV.
+- Install FFmpeg if missing:
+  - Debian/Ubuntu: `sudo apt-get update && sudo apt-get install -y ffmpeg`
+  - macOS (Homebrew): `brew install ffmpeg`
+
 ---
 
 ## 🤝 Contributing
@@ -599,4 +607,3 @@ Use mood tags to create dynamic playlists (energetic workout mixes, relaxing eve
 **Made with ❤️ for music lovers and data nerds**
 
 *If this project helps you, consider ⭐ starring the repo!*
-
