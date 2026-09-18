@@ -8,6 +8,8 @@ import json
 import sys
 import argparse
 import multiprocessing
+import subprocess
+import tempfile
 from pathlib import Path
 from datetime import datetime
 import platform
@@ -54,6 +56,59 @@ GENRE_MODEL = f"{MODEL_DIR}/genre_discogs400-discogs-effnet-1.pb"
 GENRE_METADATA = f"{MODEL_DIR}/genre_discogs400-discogs-effnet-1.json"
 MOOD_MODEL = f"{MODEL_DIR}/mtg_jamendo_moodtheme-discogs-effnet-1.pb"
 MOOD_METADATA = f"{MODEL_DIR}/mtg_jamendo_moodtheme-discogs-effnet-1.json"
+
+
+def _load_audio_for_analysis(filepath, sample_rate=16000, resample_quality=1):
+    """Load audio for analysis, converting Opus to temporary WAV first."""
+    from essentia.standard import MonoLoader
+
+    filepath = Path(filepath)
+    source_path = str(filepath)
+    temp_wav_path = None
+
+    try:
+        if filepath.suffix.lower() == '.opus':
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
+                temp_wav_path = temp_wav.name
+
+            try:
+                subprocess.run(
+                    [
+                        'ffmpeg',
+                        '-y',
+                        '-i', source_path,
+                        '-vn',
+                        '-ac', '1',
+                        '-ar', str(sample_rate),
+                        '-c:a', 'pcm_s16le',
+                        temp_wav_path
+                    ],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+            except FileNotFoundError as e:
+                raise RuntimeError("ffmpeg is required to analyze .opus files but was not found") from e
+            except subprocess.CalledProcessError as e:
+                error_output = (e.stderr or '').strip()
+                raise RuntimeError(
+                    f"ffmpeg failed to convert .opus file: {error_output or e}"
+                ) from e
+
+            source_path = temp_wav_path
+
+        return MonoLoader(
+            filename=source_path,
+            sampleRate=sample_rate,
+            resampleQuality=resample_quality
+        )()
+    finally:
+        if temp_wav_path and os.path.exists(temp_wav_path):
+            try:
+                os.remove(temp_wav_path)
+            except OSError:
+                pass
 
 
 def format_genre_tag(raw_genre, style='parent_child'):
@@ -369,14 +424,8 @@ class EssentiaAnalyzer:
     def analyze_file(self, filepath):
         """Analyze a single audio file"""
         try:
-            from essentia.standard import MonoLoader
-            
             # Load audio (resampled to 16kHz, quality=1 is adequate for ML classification)
-            audio = MonoLoader(
-                filename=str(filepath),
-                sampleRate=16000,
-                resampleQuality=1
-            )()
+            audio = _load_audio_for_analysis(filepath, sample_rate=16000, resample_quality=1)
             
             # Truncate to max duration — genre/mood classification doesn't need
             # the full track and this dramatically speeds up long files
@@ -867,13 +916,7 @@ def _worker_process_file(args):
             if has_existing_tags(filepath, config_dict['enable_genres'], config_dict['enable_moods']):
                 return {'filepath': filepath_str, 'status': 'skipped'}
 
-        from essentia.standard import MonoLoader
-
-        audio = MonoLoader(
-            filename=filepath_str,
-            sampleRate=16000,
-            resampleQuality=1
-        )()
+        audio = _load_audio_for_analysis(filepath_str, sample_rate=16000, resample_quality=1)
 
         # Truncate to max duration
         max_samples = int(config_dict['max_audio_duration'] * 16000)
