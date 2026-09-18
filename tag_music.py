@@ -8,12 +8,9 @@ import json
 import sys
 import argparse
 import multiprocessing
-import subprocess
-import tempfile
 from pathlib import Path
 from datetime import datetime
 import platform
-from contextlib import contextmanager
 import numpy as np
 
 # Essentia/TF imports are deferred to EssentiaAnalyzer.__init__ and worker
@@ -57,68 +54,6 @@ GENRE_MODEL = f"{MODEL_DIR}/genre_discogs400-discogs-effnet-1.pb"
 GENRE_METADATA = f"{MODEL_DIR}/genre_discogs400-discogs-effnet-1.json"
 MOOD_MODEL = f"{MODEL_DIR}/mtg_jamendo_moodtheme-discogs-effnet-1.pb"
 MOOD_METADATA = f"{MODEL_DIR}/mtg_jamendo_moodtheme-discogs-effnet-1.json"
-
-
-@contextmanager
-def _analysis_input_path(filepath, sample_rate=16000):
-    """Yield file path to analyze, converting Opus to a temporary WAV when needed."""
-    source_path = Path(filepath)
-    temp_wav_path = None
-    analysis_path = str(source_path)
-
-    try:
-        if source_path.suffix.lower() == '.opus':
-            fd, temp_wav_path = tempfile.mkstemp(suffix='.wav', prefix='essentia-opus-')
-            os.close(fd)
-            analysis_path = temp_wav_path
-
-            ffmpeg_command = [
-                'ffmpeg',
-                '-v', 'error',
-                '-y',
-                '-i', str(source_path),
-                '-ac', '1',
-                '-ar', str(sample_rate),
-                '-c:a', 'pcm_s16le',
-                analysis_path
-            ]
-
-            try:
-                subprocess.run(
-                    ffmpeg_command,
-                    check=True,
-                    capture_output=True,
-                    text=True
-                )
-            except FileNotFoundError as e:
-                raise RuntimeError(
-                    "FFmpeg is required to analyze .opus files but was not found in PATH"
-                ) from e
-            except subprocess.CalledProcessError as e:
-                ffmpeg_error = (e.stderr or '').strip() or 'unknown FFmpeg error'
-                raise RuntimeError(
-                    f"FFmpeg failed to convert '{source_path}' for analysis: {ffmpeg_error}"
-                ) from e
-
-        yield analysis_path
-    finally:
-        if temp_wav_path and os.path.exists(temp_wav_path):
-            try:
-                os.remove(temp_wav_path)
-            except OSError:
-                pass
-
-
-def _load_analysis_audio(filepath, sample_rate=16000):
-    """Load audio for analysis, converting Opus input to temporary WAV if needed."""
-    from essentia.standard import MonoLoader
-
-    with _analysis_input_path(filepath, sample_rate=sample_rate) as analysis_path:
-        return MonoLoader(
-            filename=analysis_path,
-            sampleRate=sample_rate,
-            resampleQuality=1
-        )()
 
 
 def format_genre_tag(raw_genre, style='parent_child'):
@@ -434,8 +369,14 @@ class EssentiaAnalyzer:
     def analyze_file(self, filepath):
         """Analyze a single audio file"""
         try:
+            from essentia.standard import MonoLoader
+            
             # Load audio (resampled to 16kHz, quality=1 is adequate for ML classification)
-            audio = _load_analysis_audio(filepath, sample_rate=16000)
+            audio = MonoLoader(
+                filename=str(filepath),
+                sampleRate=16000,
+                resampleQuality=1
+            )()
             
             # Truncate to max duration — genre/mood classification doesn't need
             # the full track and this dramatically speeds up long files
@@ -926,7 +867,13 @@ def _worker_process_file(args):
             if has_existing_tags(filepath, config_dict['enable_genres'], config_dict['enable_moods']):
                 return {'filepath': filepath_str, 'status': 'skipped'}
 
-        audio = _load_analysis_audio(filepath_str, sample_rate=16000)
+        from essentia.standard import MonoLoader
+
+        audio = MonoLoader(
+            filename=filepath_str,
+            sampleRate=16000,
+            resampleQuality=1
+        )()
 
         # Truncate to max duration
         max_samples = int(config_dict['max_audio_duration'] * 16000)
